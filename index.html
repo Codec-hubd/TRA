@@ -371,7 +371,7 @@
                     questionHTML += '</div>';
                     break;
                 case 'short': case 'long':
-                     questionHTML += `<div class="p-3 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 rounded-r-lg text-sm">AI will grade this open-ended question.</div>`;
+                     questionHTML += `<div class="p-3 bg-blue-100 border-l-4 border-blue-500 text-blue-800 rounded-r-lg text-sm">This open-ended question will be graded by AI.</div>`;
                     break;
             }
             questionHTML += '</div>';
@@ -470,46 +470,31 @@
         }
 
         async function evaluateWithAI(question, answer) {
-            // IMPORTANT: The API key is visible in the client-side code.
-            // You MUST restrict this key in your Google Cloud Console to your website's domain.
-            const apiKey = "AIzaSyAd-MEBl0vhY0maBzuaU3hWPoaVGNmVx_8";
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const pipedreamUrl = "https://eoepvhnq3ujiz2g.m.pipedream.net";
             
-            const systemPrompt = `You are an AI grader. Evaluate the student's answer for the given question. Provide a score from 0 (incorrect) to 1 (correct). Also provide brief feedback. Respond ONLY in a valid JSON format. The JSON schema is: {"type": "OBJECT", "properties": {"score": {"type": "NUMBER"}, "feedback": {"type": "STRING"}}}`;
-            
-            const payload = {
-                contents: [{ parts: [{ text: `Question: ${question}\nStudent's Answer: ${answer}` }] }],
-                systemInstruction: { parts: [{ text: systemPrompt }] },
-                generationConfig: { 
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            "score": { "type": "NUMBER" },
-                            "feedback": { "type": "STRING" }
-                        }
-                    }
-                }
-            };
-
             try {
-                const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const response = await fetch(pipedreamUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question, answer })
+                });
+
                 if (!response.ok) {
-                    const errorBody = await response.text();
-                    console.error("AI API Error Response:", errorBody);
-                    console.error(`API request failed with status: ${response.status} ${response.statusText}. This is often caused by an incorrect API key restriction. Ensure your key is restricted to the correct HTTP referrer (like your github.io URL).`);
-                    throw new Error(`API request failed with status ${response.status}`);
+                    console.error("Pipedream workflow returned an error:", response.status, response.statusText);
+                    throw new Error("Failed to get a response from the grading service.");
                 }
-                const result = await response.json();
-                if (result.candidates && result.candidates[0].content?.parts?.[0]?.text) {
-                    return JSON.parse(result.candidates[0].content.parts[0].text);
-                } else {
-                     console.error("Invalid AI response structure:", result);
-                     throw new Error("Invalid response structure from AI.");
-                }
+                
+                const responseData = await response.json();
+                
+                // Pipedream's "Create Message" action returns a complex object. We need to parse the AI's actual response from it.
+                const aiResponseContent = responseData.choices[0].message.content;
+                
+                // The AI's response is a string of JSON, so we need to parse it.
+                return JSON.parse(aiResponseContent);
+
             } catch (error) {
-                console.error("The AI grading function failed. This is often due to an API key restriction issue. Please check the instructions on how to restrict your key correctly.", error);
-                return { score: 0, feedback: "AI grading failed. Please check the browser console (F12) for more details." };
+                console.error("The AI grading function failed:", error);
+                return { score: 0, feedback: "AI grading failed. This answer has been marked as incorrect." };
             }
         }
         
