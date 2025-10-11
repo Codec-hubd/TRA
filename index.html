@@ -479,24 +479,41 @@
                     body: JSON.stringify({ question, answer })
                 });
 
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    console.error("Pipedream workflow returned an error:", response.status, response.statusText, errorText);
-                    throw new Error("Failed to get a response from the grading service.");
-                }
-                
-                const responseData = await response.json();
-                console.log("Received from Pipedream:", responseData);
+                const responseText = await response.text();
+                console.log("Received raw text from Pipedream:", responseText);
 
-                let aiResponseContent;
-                if (responseData.choices && responseData.choices[0]?.message?.content) {
-                    aiResponseContent = responseData.choices[0].message.content;
-                } else {
-                    console.error("Could not find AI response content in the expected format.", responseData);
-                    throw new Error("Unexpected response format from grading service.");
+                if (!response.ok) {
+                    console.error("Pipedream workflow returned an error:", response.status, response.statusText, responseText);
+                    if (responseText.includes("Success!")) {
+                         console.error("CRITICAL ERROR: Pipedream is returning its default success message. You MUST configure the final step of your Pipedream workflow to return the AI's response data. Add a 'Return HTTP Response' step at the end of your workflow, and for the 'Body', select the result of the AI step (e.g., 'steps.create_message.$return_value').");
+                         throw new Error("Pipedream workflow is not configured to return AI data.");
+                    }
+                    throw new Error("Failed to get a valid response from the grading service.");
                 }
                 
-                return JSON.parse(aiResponseContent);
+                try {
+                    const responseData = JSON.parse(responseText);
+                    
+                    // The screenshot shows Pipedream returns the AI step's result inside `steps.create_message.$return_value`
+                    const aiStepOutput = responseData.steps.create_message.$return_value;
+                    
+                    let aiResponseContent;
+                    if (aiStepOutput && aiStepOutput.content && aiStepOutput.content[0]?.text) {
+                        aiResponseContent = aiStepOutput.content[0].text;
+                    } else {
+                        console.error("Could not find AI response content in the expected format for Anthropic/Claude.", aiStepOutput);
+                        throw new Error("Unexpected response format from grading service.");
+                    }
+                    
+                    console.log("Extracted AI response content:", aiResponseContent);
+                    return JSON.parse(aiResponseContent);
+
+                } catch (jsonParseError) {
+                    // This is a fallback for if Pipedream is configured to return just the AI's response directly
+                    console.warn("Could not parse the full Pipedream context, attempting to parse as direct AI output.", jsonParseError);
+                    // The AI's response might be the entire body, so we try parsing that directly.
+                    return JSON.parse(responseText);
+                }
 
             } catch (error) {
                 console.error("The AI grading function failed:", error);
