@@ -354,7 +354,13 @@
             let questionHTML = `
                 <div id="${questionId}" class="p-6 border rounded-xl bg-gray-50 relative" data-type="${type}">
                     <button onclick="document.getElementById('${questionId}').remove()" class="absolute top-3 right-3 text-red-500 hover:text-red-700 font-bold p-1 rounded-full">&times;</button>
-                    <label class="block text-lg font-semibold text-gray-700 mb-2">Question ${questionIndex}</label>
+                    <div class="flex justify-between items-center mb-4">
+                        <label class="block text-lg font-semibold text-gray-700">Question ${questionIndex}</label>
+                        <div class="flex items-center gap-2">
+                            <label class="font-medium text-gray-700">Points:</label>
+                            <input type="number" value="${data ? data.points : 10}" min="1" class="w-20 p-1 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500">
+                        </div>
+                    </div>
                     <textarea class="w-full p-2 border border-gray-300 rounded-lg mb-4 text-lg focus:ring-2 focus:ring-blue-400" placeholder="Enter question text...">${data ? data.text : ''}</textarea>`;
 
             switch (type) {
@@ -387,7 +393,8 @@
             document.querySelectorAll('#questions-container > div').forEach(qDiv => {
                 const question = {
                     type: qDiv.dataset.type,
-                    text: qDiv.querySelector('textarea').value
+                    text: qDiv.querySelector('textarea').value,
+                    points: parseInt(qDiv.querySelector('input[type="number"]').value, 10) || 10
                 };
                 if (question.type === 'mcq') {
                     question.options = Array.from(qDiv.querySelectorAll('.options-container input[type="text"]')).map(opt => opt.value);
@@ -431,7 +438,7 @@
                 const questionsContainer = document.getElementById('student-questions-container');
                 questionsContainer.innerHTML = '';
                 exam.questions.forEach((q, index) => {
-                    let questionHTML = `<div class="p-4 rounded-lg bg-gray-50" data-index="${index}" data-type="${q.type}"><p class="text-xl font-semibold mb-4 text-gray-800">${index + 1}. ${q.text}</p>`;
+                    let questionHTML = `<div class="p-4 rounded-lg bg-gray-50" data-index="${index}" data-type="${q.type}"><p class="text-xl font-semibold mb-4 text-gray-800">${index + 1}. ${q.text} <span class="text-base font-normal text-gray-500">(${q.points} points)</span></p>`;
                     if (q.type === 'mcq') {
                         questionHTML += `<div class="space-y-3">`;
                         q.options.forEach((opt, i) => {
@@ -491,28 +498,22 @@
                     throw new Error("Failed to get a valid response from the grading service.");
                 }
                 
-                try {
-                    const responseData = JSON.parse(responseText);
-                    
-                    // The screenshot shows Pipedream returns the AI step's result inside `steps.create_message.$return_value`
-                    const aiStepOutput = responseData.steps.create_message.$return_value;
-                    
-                    let aiResponseContent;
-                    if (aiStepOutput && aiStepOutput.content && aiStepOutput.content[0]?.text) {
-                        aiResponseContent = aiStepOutput.content[0].text;
-                    } else {
-                        console.error("Could not find AI response content in the expected format for Anthropic/Claude.", aiStepOutput);
-                        throw new Error("Unexpected response format from grading service.");
+                // This is the updated, robust JSON extraction logic.
+                // It handles cases where the AI adds conversational text around the JSON object.
+                const jsonMatch = responseText.match(/\{.*\}/s);
+                if (jsonMatch && jsonMatch[0]) {
+                    const jsonString = jsonMatch[0];
+                    console.log("Found and extracted JSON string:", jsonString);
+                    try {
+                        return JSON.parse(jsonString);
+                    } catch (innerParseError) {
+                        console.error("Failed to parse the extracted JSON string:", innerParseError);
+                        throw new Error("Extracted text was not valid JSON.");
                     }
-                    
-                    console.log("Extracted AI response content:", aiResponseContent);
-                    return JSON.parse(aiResponseContent);
-
-                } catch (jsonParseError) {
-                    // This is a fallback for if Pipedream is configured to return just the AI's response directly
-                    console.warn("Could not parse the full Pipedream context, attempting to parse as direct AI output.", jsonParseError);
-                    // The AI's response might be the entire body, so we try parsing that directly.
-                    return JSON.parse(responseText);
+                } else {
+                    // This error will be thrown if the response contains no JSON at all.
+                    console.error("No JSON object found in the response from Pipedream. Raw response:", responseText);
+                    throw new Error("No JSON object found in the AI response.");
                 }
 
             } catch (error) {
@@ -543,16 +544,16 @@
             const gradingPromises = examData.questions.map((question, i) => {
                 const studentAnswer = studentAnswers[i];
                 if (question.type === 'mcq') {
-                    const isCorrect = studentAnswer === question.correctAnswer;
+                    const score = (studentAnswer === question.correctAnswer) ? 1.0 : 0.0;
                     return Promise.resolve({
-                        isCorrect: isCorrect,
-                        feedback: isCorrect ? 'Correct' : 'Incorrect',
+                        score: score,
+                        feedback: score === 1.0 ? 'Correct' : 'Incorrect',
                         question: question,
                         studentAnswer: studentAnswer
                     });
                 } else {
                     return evaluateWithAI(question.text, studentAnswer || "").then(aiResult => ({
-                        isCorrect: aiResult.score >= 0.5,
+                        score: aiResult.score,
                         feedback: aiResult.feedback,
                         question: question,
                         studentAnswer: studentAnswer
@@ -562,35 +563,43 @@
 
             const allResults = await Promise.all(gradingPromises);
 
-            let score = 0;
-            const totalQuestions = examData.questions.length;
+            let earnedScore = 0;
+            let totalPossibleScore = 0;
             const resultsDetailsContainer = document.getElementById('results-details-container');
             
             allResults.forEach((result, i) => {
-                if (result.isCorrect) {
-                    score++;
-                }
                 const question = result.question;
                 const studentAnswer = result.studentAnswer;
+                const points = question.points || 10;
+                totalPossibleScore += points;
+                earnedScore += result.score * points;
+
+                let resultColor = 'red';
+                if (result.score === 1.0) {
+                    resultColor = 'green';
+                } else if (result.score > 0 && result.score < 1.0) {
+                    resultColor = 'yellow';
+                }
                 
-                let resultColor = result.isCorrect ? 'green' : 'red';
                 let answerDisplay = '';
                 if (question.type === 'mcq') {
                     const studentChoice = studentAnswer !== null ? question.options[studentAnswer] : "No answer";
                     const correctChoice = question.options[question.correctAnswer];
-                    answerDisplay = `<p class="mt-2">Your answer: <span class="font-medium ${studentAnswer === question.correctAnswer ? 'text-green-700' : 'text-red-700'}">${studentChoice}</span></p><p>Correct answer: <span class="font-medium text-green-700">${correctChoice}</span></p>`;
+                    answerDisplay = `<p class="mt-2">Your answer: <span class="font-medium ${result.score === 1.0 ? 'text-green-700' : 'text-red-700'}">${studentChoice}</span></p><p>Correct answer: <span class="font-medium text-green-700">${correctChoice}</span></p>`;
                 } else {
                     answerDisplay = `<p class="mt-2">Your answer: <span class="font-medium text-gray-800">${studentAnswer || "No answer"}</span></p><p class="mt-2 p-2 bg-gray-100 rounded">AI Feedback: <span class="font-medium text-gray-700">${result.feedback}</span></p>`;
                 }
 
-                resultsDetailsContainer.innerHTML += `<div class="p-4 border-l-4 border-${resultColor}-500 bg-${resultColor}-50 rounded-r-lg"><p class="font-semibold text-gray-800">${i + 1}. ${question.text}</p>${answerDisplay}</div>`;
+                resultsDetailsContainer.innerHTML += `<div class="p-4 border-l-4 border-${resultColor}-500 bg-${resultColor}-50 rounded-r-lg"><p class="font-semibold text-gray-800">${i + 1}. ${question.text} <span class="font-normal text-gray-600">(${(result.score * points).toFixed(1)}/${points} points)</span></p>${answerDisplay}</div>`;
             });
 
+            const percentage = totalPossibleScore > 0 ? ((earnedScore / totalPossibleScore) * 100).toFixed(1) : 0;
+
             document.getElementById('results-loader').classList.add('view-hidden');
-            document.getElementById('results-summary').innerText = `You scored ${score} out of ${totalQuestions}`;
+            document.getElementById('results-summary').innerText = `You scored ${earnedScore.toFixed(1)} out of ${totalPossibleScore} (${percentage}%)`;
 
             const examCode = localStorage.getItem('currentExamCode');
-            const submissionData = { studentName, answers: studentAnswers, score, totalQuestions, timestamp: serverTimestamp() };
+            const submissionData = { studentName, score: earnedScore, totalScore: totalPossibleScore, percentage, timestamp: serverTimestamp() };
             const submissionsCol = collection(db, "exams", examCode, "submissions");
             await addDoc(submissionsCol, submissionData);
         };
@@ -620,7 +629,7 @@
                     <div class="bg-gray-100 p-4 rounded-lg">
                         <div class="flex justify-between items-center">
                             <p class="font-bold text-lg text-gray-800">${sub.studentName}</p>
-                            <p class="font-semibold text-blue-600">Score: ${sub.score} / ${sub.totalQuestions}</p>
+                            <p class="font-semibold text-blue-600">Score: ${sub.score.toFixed(1)} / ${sub.totalScore} (${sub.percentage}%)</p>
                         </div>
                         <p class="text-sm text-gray-500">Submitted on: ${new Date(sub.timestamp?.toDate()).toLocaleString()}</p>
                     </div>
